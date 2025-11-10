@@ -68,7 +68,6 @@
 
 <script src="https://d3js.org/d3.v5.min.js"></script>
 <script>
-    // --- STATE & D3 SETUP (No changes here) ---
     let currentSessionId = null;
     let currentGraphData = { nodes: [], links: [] };
     let fileSystemGraph = null;
@@ -93,7 +92,6 @@
     const folderForm = document.getElementById('folder-form');
     const folderInput = document.getElementById('folder-input');
 
-    // --- Core functions (No changes in this section) ---
     function uploadAndRender(formData) {
         statusDiv.textContent = "Analyzing entire project...";
         loader.style.display = 'flex';
@@ -246,7 +244,6 @@
         svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
     });
     
-    // --- MODIFIED: Report button listeners ---
     document.getElementById('show-report').addEventListener('click', () => {
         if (!currentSessionId) return;
         statusDiv.textContent = 'Generating report...';
@@ -290,7 +287,7 @@
             body: JSON.stringify({ sessionId: currentSessionId })
         })
         .then(res => res.json()).then(json => {
-            const jsonString = JSON.stringify(json, null, 2); // Pretty-print the JSON
+            const jsonString = JSON.stringify(json, null, 2);
             downloadFile(jsonString, 'report.json', 'application/json');
             statusDiv.textContent = 'JSON report downloaded.';
         }).finally(() => { loader.style.display = 'none'; });
@@ -320,8 +317,6 @@ function dragged(d) {
 
 function dragended(d) { 
     if (!d3.event.active) simulation.alphaTarget(0);
-    // This is the fix: Always unpin the node after dragging is finished.
-    // The temporary pinning for expansion is handled separately.
     d.fx = null;
     d.fy = null;
 }
