@@ -17,7 +17,7 @@ setup(
 
     entry_points={
         'console_scripts': [
-            'plastic-app=plastic_app.app:main',
+            'plastic-app=plastic_app.app:app',
         ],
     },
 
