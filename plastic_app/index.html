@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plastic App</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; overflow: hidden; background-color: #f0f2f5; }
+        .controls { position: absolute; top: 20px; left: 20px; background-color: rgba(255, 255, 255, 0.95); padding: 15px 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); z-index: 10; max-width: 350px;}
+        h1 { margin: 0 0 10px 0; font-size: 1.5em; }
+        form { margin-bottom: 15px; }
+        hr { border: 0; border-top: 1px solid #ddd; margin: 20px 0; }
+        label { font-weight: bold; display: block; margin-bottom: 5px;}
+        button, input { font: inherit; padding: .5em; border-radius: .25em; border: 1px solid #ccc;}
+        button { background: #007bff; color: white; border-color: #007bff; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        #search-form { display: flex; }
+        #search-input { flex-grow: 1; margin-right: 5px; }
+        #status { margin-top: 10px; font-style: italic; color: #555; }
+        svg { width: 100vw; height: 100vh; cursor: move; }
+        .node text { pointer-events: none; font-size: 12px; fill: #333; stroke: white; stroke-width: 0.4px; paint-order: stroke; }
+        .node circle { stroke: #fff; stroke-width: 1.5px; cursor: pointer; transition: all 0.3s ease; }
+        .link { stroke: #999; stroke-opacity: 0.6; }
+        #report-output { display:none; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(240,240,240,0.98); color: #333; z-index: 20; padding: 20px; margin: 20px; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); overflow: auto; white-space: pre; font-family: 'Courier New', Courier, monospace; }
+        .loader-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255, 255, 255, 0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .loader { border: 8px solid #f3f3f3; border-top: 8px solid #3498db; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <h1>Python Knowledge Graph</h1>
+        <form id="zip-form">
+            <label for="zipfile-input">Option 1: Upload .zip file</label>
+            <input type="file" id="zipfile-input" name="zipfile" accept=".zip" required>
+            <button type="submit">Analyze ZIP</button>
+        </form>
+        <hr>
+        <form id="folder-form">
+            <label for="folder-input">Option 2: Select a folder</label>
+            <input type="file" id="folder-input" webkitdirectory directory multiple required>
+            <button type="submit">Analyze Folder</button>
+        </form>
+        <div id="analysis-controls" style="display: none;">
+             <hr>
+            <label for="search-input">Find File or Dependency</label>
+            <form id="search-form">
+                <input type="search" id="search-input" list="search-datalist" placeholder="e.g., app.py, requests">
+                <button type="submit">Search</button>
+            </form>
+            <datalist id="search-datalist"></datalist>
+            <hr>
+            <label>Actions</label>
+            <div>
+            <button id="reset-view">Reset View</button>
+            <button id="show-report">Show Report</button>
+            </div>
+            <div style="padding-top:0.5em;">
+            <button id="download-txt-report">Download (.txt)</button>
+            <button id="download-json-report">Download (.json)</button>        
+            </div>
+        </div>
+        <div id="status">Select a project to begin.</div>
+    </div>
+    <svg></svg>
+    <pre id="report-output"></pre>
+    <div id="loader" class="loader-overlay" style="display: none;"><div class="loader"></div></div>
+
+<script src="https://d3js.org/d3.v5.min.js"></script>
+<script>
+    // --- STATE & D3 SETUP (No changes here) ---
+    let currentSessionId = null;
+    let currentGraphData = { nodes: [], links: [] };
+    let fileSystemGraph = null;
+    let searchMap = null;
+    let link, node; 
+
+    const svg = d3.select("svg"), width = window.innerWidth, height = window.innerHeight;
+    const container = svg.append("g");
+    const zoom = d3.zoom().scaleExtent([0.1, 4]).on("zoom", () => container.attr("transform", d3.event.transform));
+    svg.call(zoom);
+    const simulation = d3.forceSimulation()
+        .force("link", d3.forceLink().id(d => d.id).distance(100).strength(0.5))
+        .force("charge", d3.forceManyBody().strength(-250))
+        .force("center", d3.forceCenter(width / 2, height / 2));
+
+    const statusDiv = document.getElementById('status');
+    const analysisControls = document.getElementById('analysis-controls');
+    const searchDatalist = document.getElementById('search-datalist');
+    const searchInput = document.getElementById('search-input');
+    const loader = document.getElementById('loader');
+    const zipForm = document.getElementById('zip-form');
+    const folderForm = document.getElementById('folder-form');
+    const folderInput = document.getElementById('folder-input');
+
+    // --- Core functions (No changes in this section) ---
+    function uploadAndRender(formData) {
+        statusDiv.textContent = "Analyzing entire project...";
+        loader.style.display = 'flex';
+        fetch('/upload', { method: 'POST', body: formData })
+        .then(res => res.ok ? res.json() : Promise.reject(res))
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            if (!data.fs_graph || data.fs_graph.nodes.length === 0) {
+                 throw new Error("Analysis resulted in an empty graph. Please check the project structure.");
+            }
+            currentSessionId = data.sessionId;
+            fileSystemGraph = data.fs_graph;
+            searchMap = data.search_map;
+            currentGraphData = JSON.parse(JSON.stringify(fileSystemGraph));
+            analysisControls.style.display = 'block';
+            statusDiv.textContent = "Analysis complete. Click a file to see its imports.";
+            populateSearchDatalist(searchMap);
+            updateGraph();
+        })
+        .catch(error => {
+            console.error("Caught an error:", error);
+            if (error && typeof error.json === 'function') {
+                error.json().then(errJson => {
+                    statusDiv.textContent = `Error: ${errJson.error || 'Server error.'}`;
+                }).catch(() => {
+                    statusDiv.textContent = 'Error: Could not parse server error response.';
+                });
+            } else {
+                statusDiv.textContent = `Error: ${error.message || 'Network request failed.'}`;
+            }
+        }).finally(() => {
+            loader.style.display = 'none';
+        });
+    }
+    
+    function updateGraph() {
+        const nodeColor = d => {
+            if (d.type === 'folder') return '#999';
+            if (d.type === 'python_file') return '#1f77b4';
+            if (d.type === 'dependency') return '#ff7f0e';
+            return '#ccc';
+        };
+        node = container.selectAll(".node").data(currentGraphData.nodes, d => d.id);
+        node.exit().remove();
+        const nodeEnter = node.enter().append("g").attr("class", "node").call(d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended));
+        nodeEnter.append("circle").attr("r", 8);
+        nodeEnter.append("text").attr("x", 10).attr("dy", ".35em");
+        nodeEnter.append("title");
+        node = nodeEnter.merge(node);
+        node.select("circle").attr("fill", nodeColor);
+        node.select("text").text(d => d.id.split('/').pop() || d.id);
+        node.select("title").text(d => d.id);
+        node.on('click', handleFileNodeClick);
+        link = container.selectAll(".link").data(currentGraphData.links, d => `${d.source.id}-${d.target.id}`);
+        link.exit().remove();
+        link = link.enter().insert("line", ".node").attr("class", "link").merge(link);
+        simulation.nodes(currentGraphData.nodes).on("tick", () => {
+            link.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+            node.attr("transform", d => `translate(${d.x},${d.y})`);
+        });
+        simulation.force("link").links(currentGraphData.links);
+        simulation.alpha(1).restart();
+    }
+
+    function handleFileNodeClick(d) {
+        if (d.type !== 'python_file' || d.dependenciesLoaded) return;
+        d.fx = d.x; d.fy = d.y;
+        loader.style.display = 'flex';
+        statusDiv.textContent = `Fetching imports for ${d.id.split('/').pop()}...`;
+        fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: currentSessionId, filePath: d.id })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            d.dependenciesLoaded = true;
+            const existingNodeIds = new Set(currentGraphData.nodes.map(n => n.id));
+            data.graph.nodes.forEach(newNode => {
+                if (!existingNodeIds.has(newNode.id)) {
+                    newNode.x = d.x; newNode.y = d.y;
+                    currentGraphData.nodes.push(newNode);
+                }
+            });
+            data.graph.links.forEach(newLink => currentGraphData.links.push(newLink));
+            statusDiv.textContent = "Imports loaded. Graph updated.";
+            updateGraph();
+            setTimeout(() => {
+                const transform = d3.zoomIdentity.translate(width / 1.8, height / 2).scale(1.2).translate(-d.x, -d.y);
+                svg.transition().duration(750).call(zoom.transform, transform);
+                    //.on("end", () => { d.fx = null; d.fy = null; });
+            }, 100);
+        })
+        .catch(error => {
+            statusDiv.textContent = `Error: ${error.message}`;
+            d.fx = null; d.fy = null;
+        })
+        .finally(() => { loader.style.display = 'none'; });
+    }
+
+    function populateSearchDatalist(sMap) {
+        searchDatalist.innerHTML = '';
+        Object.keys(sMap).sort().forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            searchDatalist.appendChild(option);
+        });
+    }
+    
+    function downloadFile(content, fileName, contentType) {
+        const a = document.createElement("a");
+        const file = new Blob([content], { type: contentType });
+        a.href = URL.createObjectURL(file);
+        a.download = fileName;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+
+    document.getElementById('search-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        const searchTerm = searchInput.value;
+        container.selectAll('.node').style('opacity', 1.0).select('circle').attr('stroke', '#fff').attr('stroke-width', 1.5);
+        const searchEntry = searchMap[searchTerm];
+        if (!searchEntry) {
+            statusDiv.textContent = `Search term "${searchTerm}" not found.`; return;
+        }
+        const nodesToHighlight = new Set(searchEntry.nodes);
+        let highlightColor = searchEntry.type === 'dependency' ? 'firebrick' : 'forestgreen';
+        statusDiv.textContent = `Highlighting ${nodesToHighlight.size} node(s) for "${searchTerm}".`;
+        const allRelevantIds = new Set(nodesToHighlight);
+        nodesToHighlight.forEach(path => {
+            const parts = path.split('/');
+            for (let i = 1; i < parts.length; i++) { allRelevantIds.add(parts.slice(0, i).join('/')); }
+        });
+        container.selectAll('.node').each(function(d) {
+            const isHighlightedNode = nodesToHighlight.has(d.id);
+            const isRelevant = allRelevantIds.has(d.id);
+            d3.select(this).select('circle').attr('stroke', isHighlightedNode ? highlightColor : '#fff').attr('stroke-width', isHighlightedNode ? 2.5 : 1.5);
+            d3.select(this).style('opacity', isRelevant ? 1.0 : 0.2);
+        });
+    });
+
+    document.getElementById('reset-view').addEventListener('click', () => {
+        statusDiv.textContent = "Reset to initial file system view.";
+        searchInput.value = '';
+        container.selectAll('.node').style('opacity', 1.0).select('circle').attr('stroke', '#fff').attr('stroke-width', 1.5);
+        currentGraphData = JSON.parse(JSON.stringify(fileSystemGraph));
+        updateGraph();
+        svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
+    });
+    
+    // --- MODIFIED: Report button listeners ---
+    document.getElementById('show-report').addEventListener('click', () => {
+        if (!currentSessionId) return;
+        statusDiv.textContent = 'Generating report...';
+        loader.style.display = 'flex';
+        fetch('/api/serialize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: currentSessionId })
+        })
+        .then(res => res.text()).then(text => {
+            const reportOutput = document.getElementById('report-output');
+            reportOutput.textContent = text;
+            reportOutput.style.display = 'block';
+            reportOutput.onclick = () => reportOutput.style.display = 'none';
+            statusDiv.textContent = 'Report generated. Click report to close.';
+        }).finally(() => { loader.style.display = 'none'; });
+    });
+
+    document.getElementById('download-txt-report').addEventListener('click', () => {
+        if (!currentSessionId) return;
+        statusDiv.textContent = 'Preparing text download...';
+        loader.style.display = 'flex';
+        fetch('/api/serialize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: currentSessionId })
+        })
+        .then(res => res.text()).then(text => {
+            downloadFile(text, 'report.txt', 'text/plain');
+            statusDiv.textContent = 'Text report downloaded.';
+        }).finally(() => { loader.style.display = 'none'; });
+    });
+
+    document.getElementById('download-json-report').addEventListener('click', () => {
+        if (!currentSessionId) return;
+        statusDiv.textContent = 'Preparing JSON download...';
+        loader.style.display = 'flex';
+        fetch('/api/json_report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: currentSessionId })
+        })
+        .then(res => res.json()).then(json => {
+            const jsonString = JSON.stringify(json, null, 2); // Pretty-print the JSON
+            downloadFile(jsonString, 'report.json', 'application/json');
+            statusDiv.textContent = 'JSON report downloaded.';
+        }).finally(() => { loader.style.display = 'none'; });
+    });
+
+    zipForm.addEventListener('submit', function(e) { e.preventDefault(); uploadAndRender(new FormData(this)); });
+    folderForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        const formData = new FormData();
+        for (const file of folderInput.files) {
+            formData.append('files[]', file, file.webkitRelativePath);
+        }
+        uploadAndRender(formData);
+    });
+
+
+function dragstarted(d) { 
+    if (!d3.event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x; 
+    d.fy = d.y; 
+}
+
+function dragged(d) { 
+    d.fx = d3.event.x; 
+    d.fy = d3.event.y; 
+}
+
+function dragended(d) { 
+    if (!d3.event.active) simulation.alphaTarget(0);
+    // This is the fix: Always unpin the node after dragging is finished.
+    // The temporary pinning for expansion is handled separately.
+    d.fx = null;
+    d.fy = null;
+}
+</script>
+
+</body>
+</html>
