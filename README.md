@@ -1,6 +1,6 @@
 # Plastic App
 
-## View your App files on a sweet node graph.
+### View your App files on a sweet node graph. Visualize package and dependancy connections.
 
 ### Installation
 
